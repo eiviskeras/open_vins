@@ -28,6 +28,9 @@
 
 #include "TrackBase.h"
 
+#include <array>
+#include <deque>
+
 namespace ov_core {
 
 /**
@@ -35,14 +38,20 @@ namespace ov_core {
  *
  * This class handles the tracking of [OpenCV Aruco tags](https://github.com/opencv/opencv_contrib/tree/master/modules/aruco).
  * We track the corners of the tag as compared to the pose of the tag or any other corners.
- * Right now we hardcode the dictionary to be `cv::aruco::DICT_6X6_1000`, so please generate tags in this family of tags.
- * You can generate these tags using an online utility: https://chev.me/arucogen/
+ * The marker dictionary is configurable and defaults to `cv::aruco::DICT_6X6_1000`.
+ * `cv::aruco::DICT_APRILTAG_36h11` is also supported through OpenCV's ArUco module.
  * The actual size of the tags do not matter since we do not recover the pose and instead just use this for re-detection and tracking of the
  * four corners of the tag.
  */
 class TrackAruco : public TrackBase {
 
 public:
+  struct DetectionResult {
+    double timestamp = 0.0;
+    size_t camera_id = 0;
+    std::vector<int> marker_ids;
+  };
+
   /**
    * @brief Public constructor with configuration variables
    * @param cameras camera calibration object which has all camera intrinsics in it
@@ -50,17 +59,29 @@ public:
    * @param stereo if we should do stereo feature tracking or binocular
    * @param histmethod what type of histogram pre-processing should be done (histogram eq?)
    * @param downsize we can scale the image by 1/2 to increase Aruco tag extraction speed
+   * @param dictionary OpenCV predefined marker dictionary name
+   * @param roi normalized x, y, width, and height of the image region to scan
    */
   explicit TrackAruco(std::unordered_map<size_t, std::shared_ptr<CamBase>> cameras, int numaruco, bool stereo, HistogramMethod histmethod,
-                      bool downsize)
-      : TrackBase(cameras, 0, numaruco, stereo, histmethod), max_tag_id(numaruco), do_downsizing(downsize) {
+                      bool downsize, const std::string &dictionary = "DICT_6X6_1000",
+                      const std::array<double, 4> &roi = {0.0, 0.0, 1.0, 1.0})
+      : TrackBase(cameras, 0, numaruco, stereo, histmethod), max_tag_id(numaruco), do_downsizing(downsize), detection_roi(roi) {
 #if ENABLE_ARUCO_TAGS
-#if CV_MAJOR_VERSION > 4 || ( CV_MAJOR_VERSION == 4 && CV_MINOR_VERSION >= 7)
-    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_1000);
+    int dict_id;
+    if (dictionary == "DICT_APRILTAG_36h11") {
+      dict_id = cv::aruco::DICT_APRILTAG_36h11;
+    } else if (dictionary == "DICT_6X6_1000") {
+      dict_id = cv::aruco::DICT_6X6_1000;
+    } else {
+      PRINT_ERROR(RED "[ERROR]: unsupported marker dictionary: %s\n" RESET, dictionary.c_str());
+      std::exit(EXIT_FAILURE);
+    }
+#if CV_MAJOR_VERSION > 4 || (CV_MAJOR_VERSION == 4 && CV_MINOR_VERSION >= 7)
+    aruco_dict = cv::aruco::getPredefinedDictionary(dict_id);
     aruco_params.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
     aruco_detector = cv::aruco::ArucoDetector(aruco_dict, aruco_params);
 #else
-    aruco_dict = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_1000);
+    aruco_dict = cv::aruco::getPredefinedDictionary(dict_id);
     aruco_params = cv::aruco::DetectorParameters::create();
     // NOTE: people with newer opencv might fail here
     // aruco_params->cornerRefinementMethod = cv::aruco::CornerRefineMethod::CORNER_REFINE_SUBPIX;
@@ -76,6 +97,14 @@ public:
    * @param message Contains our timestamp, images, and camera ids
    */
   void feed_new_camera(const CameraData &message) override;
+
+  /** Return and clear all per-frame detector results accumulated since the previous call. */
+  std::vector<DetectionResult> consume_detection_results() {
+    std::lock_guard<std::mutex> lock(detection_results_mtx);
+    std::vector<DetectionResult> results(detection_results.begin(), detection_results.end());
+    detection_results.clear();
+    return results;
+  }
 
 #if ENABLE_ARUCO_TAGS
   /**
@@ -106,8 +135,15 @@ protected:
   // If we should downsize the image
   bool do_downsizing;
 
+  // Normalized x, y, width, and height of the image region used for detection
+  std::array<double, 4> detection_roi;
+
+  // Per-frame results consumed by ROS diagnostics. This includes empty scans.
+  std::deque<DetectionResult> detection_results;
+  std::mutex detection_results_mtx;
+
 #if ENABLE_ARUCO_TAGS
-#if CV_MAJOR_VERSION > 4 || ( CV_MAJOR_VERSION == 4 && CV_MINOR_VERSION >= 7)
+#if CV_MAJOR_VERSION > 4 || (CV_MAJOR_VERSION == 4 && CV_MINOR_VERSION >= 7)
   // Our dictionary that we will extract aruco tags with
   cv::aruco::Dictionary aruco_dict;
   // Parameters the opencv extractor uses
@@ -120,7 +156,6 @@ protected:
   // Parameters the opencv extractor uses
   cv::Ptr<cv::aruco::DetectorParameters> aruco_params;
 #endif
-
 
   // Our tag IDs and corner we will get from the extractor
   std::unordered_map<size_t, std::vector<int>> ids_aruco;

@@ -21,6 +21,8 @@
 
 #include "ROS2Visualizer.h"
 
+#include "track/TrackAruco.h"
+
 #include "core/VioManager.h"
 #include "ros/ROSVisualizerHelper.h"
 #include "sim/Simulator.h"
@@ -30,6 +32,10 @@
 #include "utils/dataset_reader.h"
 #include "utils/print.h"
 #include "utils/sensor_data.h"
+
+#include <cmath>
+#include <cstdint>
+#include <sstream>
 
 using namespace ov_core;
 using namespace ov_type;
@@ -59,6 +65,8 @@ ROS2Visualizer::ROS2Visualizer(std::shared_ptr<rclcpp::Node> node, std::shared_p
   PRINT_DEBUG("Publishing: %s\n", pub_points_msckf->get_topic_name());
   pub_points_aruco = node->create_publisher<sensor_msgs::msg::PointCloud2>("points_aruco", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_points_aruco->get_topic_name());
+  pub_fiducial_detections = node->create_publisher<std_msgs::msg::String>("apriltag_detections", 100);
+  PRINT_DEBUG("Publishing: %s\n", pub_fiducial_detections->get_topic_name());
   pub_points_sim = node->create_publisher<sensor_msgs::msg::PointCloud2>("points_sim", 2);
   PRINT_DEBUG("Publishing: %s\n", pub_points_sim->get_topic_name());
 
@@ -220,6 +228,10 @@ void ROS2Visualizer::setup_subscribers(std::shared_ptr<ov_core::YamlParser> pars
 
 void ROS2Visualizer::visualize() {
 
+  // Emit one result for every image that the built-in tracker actually scans.
+  // OpenVINS starts its fiducial tracker after estimator initialization.
+  publish_fiducial_diagnostics();
+
   // Return if we have already visualized
   if (last_visualization_timestamp == _app->get_state()->_timestamp && _app->initialized())
     return;
@@ -264,6 +276,32 @@ void ROS2Visualizer::visualize() {
   // rT0_2 = boost::posix_time::microsec_clock::local_time();
   // double time_total = (rT0_2 - rT0_1).total_microseconds() * 1e-6;
   // PRINT_DEBUG(BLUE "[TIME]: %.4f seconds for visualization\n" RESET, time_total);
+}
+
+void ROS2Visualizer::publish_fiducial_diagnostics() {
+  auto tracker = std::dynamic_pointer_cast<ov_core::TrackAruco>(_app->get_aruco_tracker());
+  if (tracker == nullptr)
+    return;
+
+  for (const auto &detection : tracker->consume_detection_results()) {
+    const int64_t timestamp_ns = static_cast<int64_t>(std::llround(detection.timestamp * 1e9));
+    std::stringstream json;
+    json << "{\"source\":\"openvins\",\"timestamp_ns\":" << timestamp_ns << ",\"camera_id\":" << detection.camera_id
+         << ",\"count\":" << detection.marker_ids.size() << ",\"detected_ids\":[";
+    for (size_t i = 0; i < detection.marker_ids.size(); ++i) {
+      if (i > 0)
+        json << ',';
+      json << detection.marker_ids.at(i);
+    }
+    json << "]}";
+
+    std_msgs::msg::String message;
+    message.data = json.str();
+    pub_fiducial_detections->publish(message);
+    if (!detection.marker_ids.empty())
+      RCLCPP_INFO(_node->get_logger(), "OpenVINS AprilTag detection: camera=%zu timestamp_ns=%ld ids=%s", detection.camera_id, timestamp_ns,
+                  json.str().c_str());
+  }
 }
 
 void ROS2Visualizer::visualize_odometry(double timestamp) {

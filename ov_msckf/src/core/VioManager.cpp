@@ -141,8 +141,20 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
 
   // Initialize our aruco tag extractor
   if (params.use_aruco) {
-    trackARUCO = std::shared_ptr<TrackBase>(new TrackAruco(state->_cam_intrinsics_cameras, state->_options.max_aruco_features,
-                                                           params.use_stereo, params.histogram_method, params.downsize_aruco));
+    if (params.aruco_detection_roi.size() != 4) {
+      PRINT_ERROR(RED "[ERROR]: aruco_detection_roi must be [x, y, width, height]\n" RESET);
+      std::exit(EXIT_FAILURE);
+    }
+    std::array<double, 4> aruco_roi;
+    std::copy(params.aruco_detection_roi.begin(), params.aruco_detection_roi.end(), aruco_roi.begin());
+    if (aruco_roi[0] < 0.0 || aruco_roi[1] < 0.0 || aruco_roi[2] <= 0.0 || aruco_roi[3] <= 0.0 || aruco_roi[0] + aruco_roi[2] > 1.0 ||
+        aruco_roi[1] + aruco_roi[3] > 1.0) {
+      PRINT_ERROR(RED "[ERROR]: aruco_detection_roi must lie within normalized image bounds [0, 1]\n" RESET);
+      std::exit(EXIT_FAILURE);
+    }
+    trackARUCO =
+        std::shared_ptr<TrackBase>(new TrackAruco(state->_cam_intrinsics_cameras, state->_options.max_aruco_features, params.use_stereo,
+                                                  params.histogram_method, params.downsize_aruco, params.aruco_tag_dictionary, aruco_roi));
   }
 
   // Initialize our state propagator
@@ -283,8 +295,11 @@ void VioManager::track_image_and_update(const ov_core::CameraData &message_const
   // If the aruco tracker is available, the also pass to it
   // NOTE: binocular tracking for aruco doesn't make sense as we by default have the ids
   // NOTE: thus we just call the stereo tracking if we are doing binocular!
-  if (is_initialized_vio && trackARUCO != nullptr) {
+  const bool aruco_due = params.aruco_track_frequency <= 0.0 || aruco_last_timestamp < 0.0 ||
+                         message.timestamp - aruco_last_timestamp >= 1.0 / params.aruco_track_frequency;
+  if (is_initialized_vio && trackARUCO != nullptr && aruco_due) {
     trackARUCO->feed_new_camera(message);
+    aruco_last_timestamp = message.timestamp;
   }
   rT2 = boost::posix_time::microsec_clock::local_time();
 

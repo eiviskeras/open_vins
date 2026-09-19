@@ -119,6 +119,9 @@ public:
   /// Returns 3d ARUCO features in the global frame
   std::vector<Eigen::Vector3d> get_features_ARUCO();
 
+  /// Access the fiducial tracker for per-frame detector diagnostics
+  std::shared_ptr<ov_core::TrackBase> get_aruco_tracker() { return trackARUCO; }
+
   /// Returns 3d features used in the last update in global frame
   std::vector<Eigen::Vector3d> get_good_features_MSCKF() { return good_features_MSCKF; }
 
@@ -190,6 +193,9 @@ protected:
 
   /// Our aruoc tracker
   std::shared_ptr<ov_core::TrackBase> trackARUCO;
+
+  /// Timestamp of the last frame passed to the potentially expensive fiducial detector
+  double aruco_last_timestamp = -1.0;
 
   /// State initializer
   std::shared_ptr<ov_init::InertialInitializer> initializer;

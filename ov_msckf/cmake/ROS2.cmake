@@ -98,6 +98,11 @@ ament_target_dependencies(run_simulation ${ament_libraries})
 target_link_libraries(run_simulation ov_msckf_lib ${thirdparty_libraries})
 install(TARGETS run_simulation DESTINATION lib/${PROJECT_NAME})
 
+install(PROGRAMS
+        scripts/apriltag_opencv_debug.py
+        scripts/apriltag_detection_compare.py
+        DESTINATION lib/${PROJECT_NAME})
+
 add_executable(test_sim_meas src/test_sim_meas.cpp)
 ament_target_dependencies(test_sim_meas ${ament_libraries})
 target_link_libraries(test_sim_meas ov_msckf_lib ${thirdparty_libraries})

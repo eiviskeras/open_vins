@@ -402,6 +402,15 @@ struct VioManagerOptions {
   /// If should extract aruco tags and estimate them
   bool use_aruco = true;
 
+  /// OpenCV predefined dictionary used by the ArUco detector
+  std::string aruco_tag_dictionary = "DICT_6X6_1000";
+
+  /// Fiducial detector frequency; zero or less scans every tracked frame
+  double aruco_track_frequency = 10.0;
+
+  /// Normalized x, y, width, and height of the image region scanned for fiducials
+  std::vector<double> aruco_detection_roi = {0.0, 0.0, 1.0, 1.0};
+
   /// Will half the resolution of the aruco tag image (will be faster)
   bool downsize_aruco = true;
 
@@ -455,6 +464,9 @@ struct VioManagerOptions {
       parser->parse_config("use_stereo", use_stereo);
       parser->parse_config("use_klt", use_klt);
       parser->parse_config("use_aruco", use_aruco);
+      parser->parse_config("aruco_tag_dictionary", aruco_tag_dictionary, false);
+      parser->parse_config("aruco_track_frequency", aruco_track_frequency, false);
+      parser->parse_config("aruco_detection_roi", aruco_detection_roi, false);
       parser->parse_config("downsize_aruco", downsize_aruco);
       parser->parse_config("downsample_cameras", downsample_cameras);
       parser->parse_config("num_opencv_threads", num_opencv_threads);

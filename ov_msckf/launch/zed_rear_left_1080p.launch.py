@@ -1,0 +1,117 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    config_path = str(
+        Path(get_package_share_directory("ov_msckf"))
+        / "config"
+        / "zed_rear_left_1080p"
+        / "estimator_config.yaml"
+    )
+
+    imu_topic = LaunchConfiguration("imu_topic")
+    left_compressed_topic = LaunchConfiguration("left_compressed_topic")
+    right_compressed_topic = LaunchConfiguration("right_compressed_topic")
+    rviz_enable = LaunchConfiguration("rviz_enable")
+    apriltag_debug_enable = LaunchConfiguration("apriltag_debug_enable")
+    rviz_config = str(
+        Path(get_package_share_directory("ov_msckf"))
+        / "launch"
+        / "zed_rear_left_1080p.rviz"
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "imu_topic", default_value="/zed_rear_left/imu/data_raw"
+            ),
+            DeclareLaunchArgument(
+                "left_compressed_topic",
+                default_value="/zed_rear_left/left/image/compressed",
+            ),
+            DeclareLaunchArgument(
+                "right_compressed_topic",
+                default_value="/zed_rear_left/right/image/compressed",
+            ),
+            DeclareLaunchArgument(
+                "rviz_enable",
+                default_value="true",
+                description="Launch RViz with stereo images and the estimated path",
+            ),
+            DeclareLaunchArgument(
+                "apriltag_debug_enable",
+                default_value="false",
+                description="Run an independent OpenCV AprilTag detector for comparison",
+            ),
+            Node(
+                package="image_transport",
+                executable="republish",
+                name="zed_rear_left_decode_left",
+                arguments=["compressed", "raw"],
+                remappings=[
+                    ("in/compressed", left_compressed_topic),
+                    ("out", "/openvins/zed_rear_left/left/image_raw"),
+                ],
+            ),
+            Node(
+                package="image_transport",
+                executable="republish",
+                name="zed_rear_left_decode_right",
+                arguments=["compressed", "raw"],
+                remappings=[
+                    ("in/compressed", right_compressed_topic),
+                    ("out", "/openvins/zed_rear_left/right/image_raw"),
+                ],
+            ),
+            Node(
+                package="ov_msckf",
+                executable="run_subscribe_msckf",
+                namespace="ov_msckf",
+                name="zed_rear_left",
+                output="screen",
+                parameters=[
+                    {"config_path": config_path},
+                ],
+                remappings=[
+                    ("/zed_rear_left/imu/data_raw", imu_topic),
+                ],
+            ),
+            Node(
+                package="ov_msckf",
+                executable="apriltag_opencv_debug.py",
+                name="apriltag_opencv_debug",
+                condition=IfCondition(apriltag_debug_enable),
+                output="screen",
+                parameters=[
+                    {
+                        "camera_topics": [
+                            "/openvins/zed_rear_left/left/image_raw",
+                            "/openvins/zed_rear_left/right/image_raw",
+                        ]
+                    }
+                ],
+            ),
+            Node(
+                package="ov_msckf",
+                executable="apriltag_detection_compare.py",
+                name="apriltag_detection_compare",
+                condition=IfCondition(apriltag_debug_enable),
+                output="screen",
+            ),
+            Node(
+                package="rviz2",
+                executable="rviz2",
+                name="zed_rear_left_vins_rviz",
+                condition=IfCondition(rviz_enable),
+                output="screen",
+                arguments=["-d", rviz_config],
+            ),
+        ]
+    )

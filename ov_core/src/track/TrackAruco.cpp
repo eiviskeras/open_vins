@@ -82,12 +82,20 @@ void TrackAruco::perform_tracking(double timestamp, const cv::Mat &imgin, size_t
   corners[cam_id].clear();
   rejects[cam_id].clear();
 
-  // If we are downsizing, then downsize
+  // Select the configured region before detection. The saved corners are
+  // translated back into the full image coordinate frame below.
+  const int roi_x = std::max(0, std::min(img.cols - 1, (int)std::floor(detection_roi[0] * img.cols)));
+  const int roi_y = std::max(0, std::min(img.rows - 1, (int)std::floor(detection_roi[1] * img.rows)));
+  const int roi_width = std::max(1, std::min(img.cols - roi_x, (int)std::ceil(detection_roi[2] * img.cols)));
+  const int roi_height = std::max(1, std::min(img.rows - roi_y, (int)std::ceil(detection_roi[3] * img.rows)));
+  cv::Mat detection_image = img(cv::Rect(roi_x, roi_y, roi_width, roi_height));
+
+  // If enabled, downsize only the selected region.
   cv::Mat img0;
   if (do_downsizing) {
-    cv::pyrDown(img, img0, cv::Size(img.cols / 2, img.rows / 2));
+    cv::pyrDown(detection_image, img0, cv::Size(detection_image.cols / 2, detection_image.rows / 2));
   } else {
-    img0 = img;
+    img0 = detection_image;
   }
 
   //===================================================================================
@@ -101,24 +109,32 @@ void TrackAruco::perform_tracking(double timestamp, const cv::Mat &imgin, size_t
 #endif
   rT2 = boost::posix_time::microsec_clock::local_time();
 
+  // Retain one diagnostic result for every image, including images with no
+  // detections. A bounded queue prevents diagnostics from affecting VIO if a
+  // ROS publisher is temporarily delayed.
+  {
+    std::lock_guard<std::mutex> lock(detection_results_mtx);
+    detection_results.push_back({timestamp, cam_id, ids_aruco[cam_id]});
+    if (detection_results.size() > 1000)
+      detection_results.pop_front();
+  }
+
   //===================================================================================
   //===================================================================================
 
-  // If we downsized, scale all our u,v measurements by a factor of two
-  // Note: we do this so we can use these results for visulization later
-  // Note: and so that the uv added is in the same image size
-  if (do_downsizing) {
-    for (size_t i = 0; i < corners[cam_id].size(); i++) {
-      for (size_t j = 0; j < corners[cam_id].at(i).size(); j++) {
-        corners[cam_id].at(i).at(j).x *= 2;
-        corners[cam_id].at(i).at(j).y *= 2;
-      }
+  // Restore detections to full-image coordinates for visualization,
+  // undistortion, and VIO updates.
+  const float coordinate_scale = do_downsizing ? 2.0F : 1.0F;
+  for (auto &marker : corners[cam_id]) {
+    for (auto &corner : marker) {
+      corner.x = coordinate_scale * corner.x + roi_x;
+      corner.y = coordinate_scale * corner.y + roi_y;
     }
-    for (size_t i = 0; i < rejects[cam_id].size(); i++) {
-      for (size_t j = 0; j < rejects[cam_id].at(i).size(); j++) {
-        rejects[cam_id].at(i).at(j).x *= 2;
-        rejects[cam_id].at(i).at(j).y *= 2;
-      }
+  }
+  for (auto &candidate : rejects[cam_id]) {
+    for (auto &corner : candidate) {
+      corner.x = coordinate_scale * corner.x + roi_x;
+      corner.y = coordinate_scale * corner.y + roi_y;
     }
   }
 
