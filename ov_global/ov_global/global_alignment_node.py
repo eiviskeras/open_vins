@@ -115,9 +115,12 @@ class GlobalAlignmentNode(Node):
         p('tag_roll_deg', 0.0)                      # rotation about the tag normal
         p('tag_pos_sigma_m', 0.05)
         p('tag_yaw_sigma_deg', 2.0)
-        p('tag_size_m', 0.0)                        # edge length; >0 enables the landmark square-size check
-        p('landmark_sigma_m', 0.10)                 # assumed accuracy of OpenVINS aruco landmarks in global
-        p('landmark_square_tolerance', 0.25)        # relative tolerance on side/diagonal lengths
+        p('tag_size_m', 0.0)                        # edge length; >0 enables the landmark spacing check (2x2 grid)
+        p('landmark_grid_cols', 2)                  # fiducial landmark grid: 2x2 for a tag, e.g. 7x5 for a checkerboard
+        p('landmark_grid_rows', 2)
+        p('landmark_spacing_m', 0.0)                # grid corner spacing; 0 -> tag_size_m
+        p('landmark_sigma_m', 0.10)                 # assumed accuracy of OpenVINS fiducial landmarks in global
+        p('landmark_square_tolerance', 0.25)        # relative tolerance on spacing / extents / planarity
         # ---- initialisation
         p('init_mode', 'gnss')                      # gnss | tag
         p('init_lla_deg', [0.0, 0.0, 0.0])          # antenna position at VIO start
@@ -178,6 +181,9 @@ class GlobalAlignmentNode(Node):
         self.tag_pos_var = float(g('tag_pos_sigma_m')) ** 2
         self.tag_yaw_var = math.radians(float(g('tag_yaw_sigma_deg'))) ** 2
         self.tag_size = float(g('tag_size_m'))
+        self.grid_cols, self.grid_rows = int(g('landmark_grid_cols')), int(g('landmark_grid_rows'))
+        self.grid_n = self.grid_cols * self.grid_rows
+        self.grid_spacing = float(g('landmark_spacing_m')) or self.tag_size
         self.landmark_var = float(g('landmark_sigma_m')) ** 2
         self.square_tol = float(g('landmark_square_tolerance'))
         self.tag_source = str(g('tag_source'))
@@ -446,27 +452,37 @@ class GlobalAlignmentNode(Node):
         self._publish_alignment(msg.header.stamp)
 
     # ------------------------------------------------ VIO landmark anchor
-    def _square_from_landmarks(self, pts: np.ndarray) -> Optional[tuple]:
-        """Return (centre, unit normal) if the 4 points form a square of the expected size."""
-        if pts.shape != (4, 3):
+    def _grid_from_landmarks(self, pts: np.ndarray) -> Optional[tuple]:
+        """Return (centre, unit normal, extent) if the points form a planar cols x rows grid of the expected spacing.
+
+        Landmark ids are not available in the point cloud, so the check is order-free: every point
+        must have a nearest neighbour at the grid spacing, the two in-plane principal extents must
+        match those of a regular grid, and the out-of-plane spread must be small.
+        """
+        n = self.grid_n
+        if pts.shape != (n, 3):
             return None
-        d = sorted(float(np.linalg.norm(pts[i] - pts[j])) for i in range(4) for j in range(i + 1, 4))
-        sides, diags = d[:4], d[4:]
-        side = float(np.mean(sides))
-        if side <= 0.0:
+        diff = pts[:, None, :] - pts[None, :, :]
+        dist = np.linalg.norm(diff, axis=2)
+        np.fill_diagonal(dist, np.inf)
+        nn = dist.min(axis=1)
+        spacing = self.grid_spacing if self.grid_spacing > 0.0 else float(np.median(nn))
+        if spacing <= 0.0:
             return None
-        ok = max(sides) - min(sides) <= self.square_tol * side
-        ok &= abs(float(np.mean(diags)) - math.sqrt(2.0) * side) <= self.square_tol * side
-        if self.tag_size > 0.0:
-            ok &= abs(side - self.tag_size) <= self.square_tol * self.tag_size
-        if not ok:
+        tol = self.square_tol * spacing
+        if np.any(np.abs(nn - spacing) > tol):
             return None
         centre = pts.mean(axis=0)
         _, s, vt = np.linalg.svd(pts - centre)
-        n = vt[2]
-        if s[2] > self.square_tol * side:  # not planar
+        # singular values of a centred regular grid: spacing * sqrt(n * (k^2 - 1) / 12) per axis
+        expect = sorted((spacing * math.sqrt(n * (k * k - 1) / 12.0) for k in (self.grid_cols, self.grid_rows)), reverse=True)
+        if abs(s[0] - expect[0]) > tol * math.sqrt(n) or abs(s[1] - expect[1]) > tol * math.sqrt(n):
             return None
-        return centre, n / np.linalg.norm(n)
+        if s[2] > tol * math.sqrt(n):  # not planar
+            return None
+        normal = vt[2] / np.linalg.norm(vt[2])
+        extent = spacing * max(self.grid_cols - 1, self.grid_rows - 1)
+        return centre, normal, extent
 
     def _on_landmarks(self, msg: PointCloud2) -> None:
         pts = np.array(
@@ -475,14 +491,16 @@ class GlobalAlignmentNode(Node):
         ).reshape(-1, 3)
         if pts.shape[0] == 0:
             return
-        if pts.shape[0] != 4:
-            self.get_logger().warning(f'{pts.shape[0]} aruco landmarks in state, need exactly 4 (single tag)', throttle_duration_sec=5.0)
+        if pts.shape[0] != self.grid_n:
+            self.get_logger().warning(
+                f'{pts.shape[0]} fiducial landmarks in state, need exactly {self.grid_n} '
+                f'({self.grid_cols}x{self.grid_rows} grid)', throttle_duration_sec=5.0)
             return
-        sq = self._square_from_landmarks(pts)
-        if sq is None:
-            self.get_logger().warning('aruco landmarks do not form a valid tag square yet', throttle_duration_sec=5.0)
+        grid = self._grid_from_landmarks(pts)
+        if grid is None:
+            self.get_logger().warning('fiducial landmarks do not form a valid planar grid yet', throttle_duration_sec=5.0)
             return
-        centre_G, n_G = sq
+        centre_G, n_G, extent = grid
 
         # resolve the normal sign: towards the camera on first use, then keep continuity
         if self.n_G_ref is None:
@@ -508,9 +526,9 @@ class GlobalAlignmentNode(Node):
             return
         R4 = yaw_rot(yaw)
         t4 = self.p_map_tag - R4 @ centre_G
-        side = self.tag_size if self.tag_size > 0.0 else float(np.linalg.norm(pts[0] - centre_G)) * math.sqrt(2.0)
-        yaw_var = 2.0 * self.landmark_var / (side * side) + self.tag_yaw_var
-        P = np.diag([self.landmark_var / 4.0 + self.tag_pos_var] * 3 + [yaw_var])
+        # normal direction from n landmarks spread over `extent`; centre from their mean
+        yaw_var = 2.0 * self.landmark_var / (extent * extent) + self.tag_yaw_var
+        P = np.diag([self.landmark_var / self.grid_n + self.tag_pos_var] * 3 + [yaw_var])
 
         first = not self.initialized
         dt = t4 - self.x[:3]

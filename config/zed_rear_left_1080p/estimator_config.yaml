@@ -77,13 +77,24 @@ downsample_cameras: true
 num_opencv_threads: 4
 histogram_method: "HISTOGRAM"
 
-# Detect AprilTag 36h11 markers through OpenCV's ArUco module. Each detected
-# corner is retained as a persistent SLAM feature; physical marker size is not
-# used to estimate a standalone tag pose.
-use_aruco: true #true
+# Fiducial features. Either an AprilTag (use_aruco) or a single planar
+# checkerboard (use_checkerboard) provides persistent SLAM landmarks with fixed
+# ids; the two are mutually exclusive. Physical size is not used by the
+# estimator, only by the downstream ov_global alignment.
+use_aruco: false
 aruco_tag_dictionary: "DICT_APRILTAG_36h11"
+# Checkerboard with 5x7 inner corners (6x8 squares of 210 mm). Corners are only
+# added when the complete board is detected and the grid homography fit stays
+# below checkerboard_max_fit_error_px.
+use_checkerboard: true
+checkerboard_cols: 7
+checkerboard_rows: 5
+checkerboard_square_m: 0.21
+checkerboard_max_fit_error_px: 0.5
+checkerboard_min_spacing_px: 8.0
+# Shared fiducial settings
 aruco_track_frequency: 5.0
-# [x, y, width, height] normalized to the 960x540 OpenVINS image. The tag
+# [x, y, width, height] normalized to the 960x540 OpenVINS image. The board
 # remains in the lower-right quadrant, so scan that full-resolution region.
 aruco_detection_roi: [0.5, 0.5, 0.5, 0.5]
 num_aruco: 587
@@ -93,7 +104,8 @@ up_msckf_sigma_px: 1
 up_msckf_chi2_multipler: 1
 up_slam_sigma_px: 1
 up_slam_chi2_multipler: 1
-up_aruco_sigma_px: 1
+# Checkerboard corners are sub-pixel accurate (~0.2 px reprojection error).
+up_aruco_sigma_px: 0.2
 up_aruco_chi2_multipler: 1
 
 use_mask: false

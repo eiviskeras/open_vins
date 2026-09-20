@@ -22,6 +22,7 @@
 #include "ROS2Visualizer.h"
 
 #include "track/TrackAruco.h"
+#include "track/TrackCheckerboard.h"
 
 #include "core/VioManager.h"
 #include "ros/ROSVisualizerHelper.h"
@@ -279,6 +280,25 @@ void ROS2Visualizer::visualize() {
 }
 
 void ROS2Visualizer::publish_fiducial_diagnostics() {
+  if (auto board = std::dynamic_pointer_cast<ov_core::TrackCheckerboard>(_app->get_aruco_tracker())) {
+    for (const auto &detection : board->consume_detection_results()) {
+      const int64_t timestamp_ns = static_cast<int64_t>(std::llround(detection.timestamp * 1e9));
+      std::stringstream json;
+      json << "{\"source\":\"openvins\",\"type\":\"checkerboard\",\"timestamp_ns\":" << timestamp_ns
+           << ",\"camera_id\":" << detection.camera_id << ",\"found\":" << (detection.found ? "true" : "false")
+           << ",\"accepted\":" << (detection.accepted ? "true" : "false") << ",\"fit_error_px\":" << detection.fit_error_px
+           << ",\"min_spacing_px\":" << detection.min_spacing_px << "}";
+      std_msgs::msg::String message;
+      message.data = json.str();
+      pub_fiducial_detections->publish(message);
+      if (detection.found)
+        RCLCPP_INFO(_node->get_logger(), "OpenVINS checkerboard %s: camera=%zu timestamp_ns=%ld fit=%.3fpx spacing=%.1fpx",
+                    detection.accepted ? "accepted" : "rejected", detection.camera_id, timestamp_ns, detection.fit_error_px,
+                    detection.min_spacing_px);
+    }
+    return;
+  }
+
   auto tracker = std::dynamic_pointer_cast<ov_core::TrackAruco>(_app->get_aruco_tracker());
   if (tracker == nullptr)
     return;

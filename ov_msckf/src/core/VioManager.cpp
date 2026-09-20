@@ -25,6 +25,7 @@
 #include "feat/FeatureDatabase.h"
 #include "feat/FeatureInitializer.h"
 #include "track/TrackAruco.h"
+#include "track/TrackCheckerboard.h"
 #include "track/TrackDescriptor.h"
 #include "track/TrackKLT.h"
 #include "track/TrackSIM.h"
@@ -139,8 +140,8 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
         params.fast_threshold, params.grid_x, params.grid_y, params.min_px_dist, params.knn_ratio));
   }
 
-  // Initialize our aruco tag extractor
-  if (params.use_aruco) {
+  // Initialize our fiducial (aruco tag or checkerboard) extractor
+  if (params.use_aruco || params.use_checkerboard) {
     if (params.aruco_detection_roi.size() != 4) {
       PRINT_ERROR(RED "[ERROR]: aruco_detection_roi must be [x, y, width, height]\n" RESET);
       std::exit(EXIT_FAILURE);
@@ -152,9 +153,16 @@ VioManager::VioManager(VioManagerOptions &params_) : thread_init_running(false),
       PRINT_ERROR(RED "[ERROR]: aruco_detection_roi must lie within normalized image bounds [0, 1]\n" RESET);
       std::exit(EXIT_FAILURE);
     }
-    trackARUCO =
-        std::shared_ptr<TrackBase>(new TrackAruco(state->_cam_intrinsics_cameras, state->_options.max_aruco_features, params.use_stereo,
-                                                  params.histogram_method, params.downsize_aruco, params.aruco_tag_dictionary, aruco_roi));
+    if (params.use_checkerboard) {
+      trackARUCO = std::shared_ptr<TrackBase>(new TrackCheckerboard(
+          state->_cam_intrinsics_cameras, state->_options.max_aruco_features, params.use_stereo, params.histogram_method,
+          params.downsize_aruco, params.checkerboard_cols, params.checkerboard_rows, params.checkerboard_max_fit_error_px,
+          params.checkerboard_min_spacing_px, aruco_roi));
+    } else {
+      trackARUCO = std::shared_ptr<TrackBase>(new TrackAruco(state->_cam_intrinsics_cameras, state->_options.max_aruco_features,
+                                                             params.use_stereo, params.histogram_method, params.downsize_aruco,
+                                                             params.aruco_tag_dictionary, aruco_roi));
+    }
   }
 
   // Initialize our state propagator

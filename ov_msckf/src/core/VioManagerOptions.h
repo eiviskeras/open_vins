@@ -414,6 +414,25 @@ struct VioManagerOptions {
   /// Will half the resolution of the aruco tag image (will be faster)
   bool downsize_aruco = true;
 
+  /// If we should detect a single planar checkerboard and use its inner corners as fiducial features (exclusive with use_aruco).
+  /// Shares aruco_track_frequency, aruco_detection_roi, downsize_aruco, num_aruco and the aruco update noise/chi2 settings.
+  bool use_checkerboard = false;
+
+  /// Number of inner corners per row of the checkerboard
+  int checkerboard_cols = 7;
+
+  /// Number of inner corners per column of the checkerboard
+  int checkerboard_rows = 5;
+
+  /// Physical square size in meters (informational; used by downstream alignment, not by the estimator)
+  double checkerboard_square_m = 0.21;
+
+  /// Reject a board when the RMS residual of a grid homography fit to the undistorted corners exceeds this (pixels)
+  double checkerboard_max_fit_error_px = 0.5;
+
+  /// Reject a board when neighbouring inner corners are closer than this (pixels, in the tracking image)
+  double checkerboard_min_spacing_px = 8.0;
+
   /// Will half the resolution all tracking image (aruco will be 1/4 instead of halved if dowsize_aruoc also enabled)
   bool downsample_cameras = false;
 
@@ -468,6 +487,16 @@ struct VioManagerOptions {
       parser->parse_config("aruco_track_frequency", aruco_track_frequency, false);
       parser->parse_config("aruco_detection_roi", aruco_detection_roi, false);
       parser->parse_config("downsize_aruco", downsize_aruco);
+      parser->parse_config("use_checkerboard", use_checkerboard, false);
+      parser->parse_config("checkerboard_cols", checkerboard_cols, false);
+      parser->parse_config("checkerboard_rows", checkerboard_rows, false);
+      parser->parse_config("checkerboard_square_m", checkerboard_square_m, false);
+      parser->parse_config("checkerboard_max_fit_error_px", checkerboard_max_fit_error_px, false);
+      parser->parse_config("checkerboard_min_spacing_px", checkerboard_min_spacing_px, false);
+      if (use_aruco && use_checkerboard) {
+        printf(RED "VioManager(): use_aruco and use_checkerboard are mutually exclusive\n" RESET);
+        std::exit(EXIT_FAILURE);
+      }
       parser->parse_config("downsample_cameras", downsample_cameras);
       parser->parse_config("num_opencv_threads", num_opencv_threads);
       parser->parse_config("multi_threading_pubs", use_multi_threading_pubs, false);
@@ -500,6 +529,13 @@ struct VioManagerOptions {
     PRINT_DEBUG("  - use_klt: %d\n", use_klt);
     PRINT_DEBUG("  - use_aruco: %d\n", use_aruco);
     PRINT_DEBUG("  - downsize aruco: %d\n", downsize_aruco);
+    PRINT_DEBUG("  - use_checkerboard: %d\n", use_checkerboard);
+    if (use_checkerboard) {
+      PRINT_DEBUG("  - checkerboard inner corners (cols x rows): %d x %d\n", checkerboard_cols, checkerboard_rows);
+      PRINT_DEBUG("  - checkerboard square size: %.3f m\n", checkerboard_square_m);
+      PRINT_DEBUG("  - checkerboard max fit error: %.3f px\n", checkerboard_max_fit_error_px);
+      PRINT_DEBUG("  - checkerboard min corner spacing: %.1f px\n", checkerboard_min_spacing_px);
+    }
     PRINT_DEBUG("  - downsize cameras: %d\n", downsample_cameras);
     PRINT_DEBUG("  - num opencv threads: %d\n", num_opencv_threads);
     PRINT_DEBUG("  - use multi-threading pubs: %d\n", use_multi_threading_pubs);

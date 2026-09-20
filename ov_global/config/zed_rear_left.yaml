@@ -42,17 +42,22 @@ global_alignment_node:
     cam_mount_rpy_deg: [0.0, 0.0, 180.0]
     p_base_antenna: [-10.343, 3.333, -3.531] # GR antenna lever arm (frames.yaml)
 
-    # --- map origin and AprilTag survey
+    # --- map origin and fiducial survey (tag_* names kept; the fiducial is the checkerboard centre)
     ref_lla_deg: [54.176852, 12.095446, 5.14] # autoferry llh_ref
-    tag_center_lla_deg: [54.176852, 12.095446, 5.14] # TODO survey (lat, lon, ellipsoid height)
+    tag_center_lla_deg: [54.176852, 12.095446, 5.14] # TODO survey the board centre (lat, lon, ellipsoid height)
     tag_center_offset_up_m: 0.0
-    tag_facing_azimuth_deg: .nan # TODO compass direction the tag face looks at; .nan -> yaw not corrected
+    tag_facing_azimuth_deg: .nan # TODO compass direction the board face looks at; .nan -> yaw not corrected
     tag_tilt_deg: 0.0
     tag_roll_deg: 0.0
     tag_pos_sigma_m: 0.05
     tag_yaw_sigma_deg: 2.0
-    tag_size_m: 0.162 # TODO: same as tag_pnp_node; enables the landmark square check
-    landmark_sigma_m: 0.10 # assumed accuracy of the OpenVINS aruco landmarks
+    # OpenVINS checkerboard landmarks: 7x5 inner corners, 210 mm squares (see estimator_config.yaml).
+    # For the AprilTag use landmark_grid_cols/rows 2 and landmark_spacing_m = tag_size_m (0.162).
+    tag_size_m: 0.162
+    landmark_grid_cols: 7
+    landmark_grid_rows: 5
+    landmark_spacing_m: 0.21
+    landmark_sigma_m: 0.05 # assumed accuracy of the OpenVINS fiducial landmarks
     landmark_square_tolerance: 0.25
 
     # --- initialisation

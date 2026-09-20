@@ -36,6 +36,7 @@ list(APPEND LIBRARY_SOURCES
         src/sim/BsplineSE3.cpp
         src/track/TrackBase.cpp
         src/track/TrackAruco.cpp
+        src/track/TrackCheckerboard.cpp
         src/track/TrackDescriptor.cpp
         src/track/TrackKLT.cpp
         src/track/TrackSIM.cpp
