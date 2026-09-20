@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
@@ -21,6 +21,21 @@ def generate_launch_description():
     right_compressed_topic = LaunchConfiguration("right_compressed_topic")
     rviz_enable = LaunchConfiguration("rviz_enable")
     apriltag_debug_enable = LaunchConfiguration("apriltag_debug_enable")
+    ov_global_enable = LaunchConfiguration("ov_global_enable")
+    ov_global_config = LaunchConfiguration("ov_global_config")
+    try:
+        ov_global_default_config = str(
+            Path(get_package_share_directory("ov_global")) / "config" / "zed_rear_left.yaml"
+        )
+    except PackageNotFoundError:
+        # ov_global not built: keep the launch usable with ov_global_enable:=false
+        ov_global_default_config = ""
+    imucam_yaml = str(
+        Path(get_package_share_directory("ov_msckf"))
+        / "config"
+        / "zed_rear_left_1080p"
+        / "kalibr_imucam_chain.yaml"
+    )
     rviz_config = str(
         Path(get_package_share_directory("ov_msckf"))
         / "launch"
@@ -49,6 +64,16 @@ def generate_launch_description():
                 "apriltag_debug_enable",
                 default_value="false",
                 description="Run an independent OpenCV AprilTag detector for comparison",
+            ),
+            DeclareLaunchArgument(
+                "ov_global_enable",
+                default_value="true",
+                description="Run the ov_global tag pose and global alignment nodes",
+            ),
+            DeclareLaunchArgument(
+                "ov_global_config",
+                default_value=ov_global_default_config,
+                description="ov_global parameter file (tag survey, lever arms, init, gating)",
             ),
             Node(
                 package="image_transport",
@@ -104,6 +129,22 @@ def generate_launch_description():
                 name="apriltag_detection_compare",
                 condition=IfCondition(apriltag_debug_enable),
                 output="screen",
+            ),
+            Node(
+                package="ov_global",
+                executable="tag_pnp_node",
+                name="tag_pnp_node",
+                output="screen",
+                condition=IfCondition(ov_global_enable),
+                parameters=[ov_global_config, {"imucam_yaml": imucam_yaml}],
+            ),
+            Node(
+                package="ov_global",
+                executable="global_alignment_node",
+                name="global_alignment_node",
+                output="screen",
+                condition=IfCondition(ov_global_enable),
+                parameters=[ov_global_config, {"imucam_yaml": imucam_yaml}],
             ),
             Node(
                 package="rviz2",
