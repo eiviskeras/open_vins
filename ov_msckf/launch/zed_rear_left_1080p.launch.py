@@ -4,7 +4,7 @@ from ament_index_python.packages import PackageNotFoundError, get_package_share_
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import AndSubstitution, EqualsSubstitution, LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -23,6 +23,7 @@ def generate_launch_description():
     apriltag_debug_enable = LaunchConfiguration("apriltag_debug_enable")
     ov_global_enable = LaunchConfiguration("ov_global_enable")
     ov_global_config = LaunchConfiguration("ov_global_config")
+    ov_global_tag_source = LaunchConfiguration("ov_global_tag_source")
     try:
         ov_global_default_config = str(
             Path(get_package_share_directory("ov_global")) / "config" / "zed_rear_left.yaml"
@@ -74,6 +75,11 @@ def generate_launch_description():
                 "ov_global_config",
                 default_value=ov_global_default_config,
                 description="ov_global parameter file (tag survey, lever arms, init, gating)",
+            ),
+            DeclareLaunchArgument(
+                "ov_global_tag_source",
+                default_value="vio_landmarks",
+                description="vio_landmarks: anchor on OpenVINS aruco landmarks; pnp: run tag_pnp_node",
             ),
             Node(
                 package="image_transport",
@@ -135,7 +141,9 @@ def generate_launch_description():
                 executable="tag_pnp_node",
                 name="tag_pnp_node",
                 output="screen",
-                condition=IfCondition(ov_global_enable),
+                condition=IfCondition(
+                    AndSubstitution(ov_global_enable, EqualsSubstitution(ov_global_tag_source, "pnp"))
+                ),
                 parameters=[ov_global_config, {"imucam_yaml": imucam_yaml}],
             ),
             Node(
@@ -144,7 +152,10 @@ def generate_launch_description():
                 name="global_alignment_node",
                 output="screen",
                 condition=IfCondition(ov_global_enable),
-                parameters=[ov_global_config, {"imucam_yaml": imucam_yaml}],
+                parameters=[
+                    ov_global_config,
+                    {"imucam_yaml": imucam_yaml, "tag_source": ov_global_tag_source},
+                ],
             ),
             Node(
                 package="rviz2",

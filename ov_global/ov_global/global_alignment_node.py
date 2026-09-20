@@ -15,10 +15,20 @@ x = [t_map_global (3), yaw] with covariance P (4x4). The pose of anything in the
 map frame is T_map_X = T_map_global(x) * T_global_X. Roll/pitch of the alignment
 are zero by construction (both frames are gravity aligned).
 
+Tag sources
+-----------
+``tag_source: vio_landmarks`` (default, simplest): the four AprilTag corners that
+OpenVINS keeps as never-marginalised SLAM landmarks (``/ov_msckf/points_aruco``)
+are read back. Their centre and plane normal give the tag pose in ``global``; the
+alignment is then a *deterministic anchor* of that estimate onto the surveyed tag.
+OpenVINS already does the loop closure internally, so every refinement of the
+landmarks moves ``map -> global`` accordingly. No second detector is needed.
+
+``tag_source: pnp``: an external PnP detection (``tag_pnp_node``) is fused as a
+chi2-gated EKF update (``correction_mode: kalman``) or a hard reset (``replace``).
+
 Initialisation: GNSS antenna LLA + NED heading at the first VIO message
-(``init_mode: gnss``) or from the first accepted tag detection (``init_mode: tag``).
-Correction: each accepted tag detection produces a chi2-gated EKF update
-(``correction_mode: kalman``) or a hard reset of the alignment (``replace``).
+(``init_mode: gnss``) or from the first accepted tag observation (``init_mode: tag``).
 """
 
 import math
@@ -30,7 +40,8 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from sensor_msgs.msg import NavSatFix
+from sensor_msgs.msg import NavSatFix, PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Float64MultiArray
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
@@ -76,6 +87,8 @@ class GlobalAlignmentNode(Node):
         p = self.declare_parameter
         # ---- topics / frames
         p('vio_topic', '/ov_msckf/odomimu')
+        p('tag_source', 'vio_landmarks')            # vio_landmarks | pnp
+        p('landmarks_topic', '/ov_msckf/points_aruco')
         p('tag_pose_topic', '/ov_global/tag_pose')
         p('map_frame', 'map')
         p('ned_frame', 'world_ned')
@@ -88,8 +101,10 @@ class GlobalAlignmentNode(Node):
         # ---- geometry
         p('imucam_yaml', '')
         p('camera_id', 0)
-        p('T_base_imu_xyz', [0.0, 0.0, 0.0])        # ZED IMU position in base_link [m]
-        p('T_base_imu_rpy', [0.0, 0.0, 0.0])        # ZED IMU orientation in base_link [rad]
+        p('p_base_cam', [0.0, 0.0, 0.0])           # cam0 optical centre in base_link [m] (frames.yaml entry)
+        # camera mount in base_link: rpy [deg] of the *level, forward-looking* camera convention
+        # (optical z = body x, optical x = body y, optical y = body z). yaw=180 -> looks aft.
+        p('cam_mount_rpy_deg', [0.0, 0.0, 180.0])
         p('p_base_antenna', [0.0, 0.0, 0.0])        # GNSS antenna position in base_link [m]
         # ---- map origin and tag
         p('ref_lla_deg', [float('nan'), float('nan'), 0.0])  # NaN -> use tag centre
@@ -100,6 +115,9 @@ class GlobalAlignmentNode(Node):
         p('tag_roll_deg', 0.0)                      # rotation about the tag normal
         p('tag_pos_sigma_m', 0.05)
         p('tag_yaw_sigma_deg', 2.0)
+        p('tag_size_m', 0.0)                        # edge length; >0 enables the landmark square-size check
+        p('landmark_sigma_m', 0.10)                 # assumed accuracy of OpenVINS aruco landmarks in global
+        p('landmark_square_tolerance', 0.25)        # relative tolerance on side/diagonal lengths
         # ---- initialisation
         p('init_mode', 'gnss')                      # gnss | tag
         p('init_lla_deg', [0.0, 0.0, 0.0])          # antenna position at VIO start
@@ -113,6 +131,7 @@ class GlobalAlignmentNode(Node):
         p('drift_pos_per_m', 0.02)                  # VIO position drift growth [m per m travelled]
         p('drift_yaw_deg_per_m', 0.05)              # VIO yaw drift growth [deg per m travelled]
         p('min_correction_interval_s', 0.0)
+        p('max_corrections', 0)                     # pnp source: 0 = unlimited, 1 = anchor once
         p('max_tag_vio_dt_s', 0.05)
 
         g = lambda name: self.get_parameter(name).value  # noqa: E731
@@ -122,8 +141,6 @@ class GlobalAlignmentNode(Node):
         self.publish_tf = bool(g('publish_tf'))
 
         # geometry
-        self.T_base_imu = make_T(rpy_to_rot(*[float(v) for v in g('T_base_imu_rpy')]), [float(v) for v in g('T_base_imu_xyz')])
-        self.T_imu_base = inv_T(self.T_base_imu)
         self.p_base_antenna = np.array([float(v) for v in g('p_base_antenna')])
         self.T_imu_cam = np.eye(4)
         self.T_imu_cams = {}
@@ -137,6 +154,14 @@ class GlobalAlignmentNode(Node):
             self.T_imu_cam = self.T_imu_cams.get(int(g('camera_id')), np.eye(4))
         else:
             self.get_logger().warning('imucam_yaml not set: assuming camera == IMU frame')
+        # base_link -> cam0 (optical) from the surveyed camera position and mount angles,
+        # then base_link -> imu through the kalibr extrinsics.
+        R_fwd_optical = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])  # columns: x_c, y_c, z_c in body
+        mount = [math.radians(float(v)) for v in g('cam_mount_rpy_deg')]
+        R_base_cam = rpy_to_rot(*mount) @ R_fwd_optical
+        self.T_base_cam = make_T(R_base_cam, [float(v) for v in g('p_base_cam')])
+        self.T_base_imu = self.T_base_cam @ inv_T(self.T_imu_cam)
+        self.T_imu_base = inv_T(self.T_base_imu)
 
         # tag pose in map
         tag_lla = [float(v) for v in g('tag_center_lla_deg')]
@@ -152,6 +177,11 @@ class GlobalAlignmentNode(Node):
         self.T_map_tag = make_T(self.R_map_tag, self.p_map_tag)
         self.tag_pos_var = float(g('tag_pos_sigma_m')) ** 2
         self.tag_yaw_var = math.radians(float(g('tag_yaw_sigma_deg'))) ** 2
+        self.tag_size = float(g('tag_size_m'))
+        self.landmark_var = float(g('landmark_sigma_m')) ** 2
+        self.square_tol = float(g('landmark_square_tolerance'))
+        self.tag_source = str(g('tag_source'))
+        self.n_G_ref: Optional[np.ndarray] = None   # tag normal sign reference (global frame)
 
         # init / correction settings
         self.init_mode = str(g('init_mode'))
@@ -164,6 +194,7 @@ class GlobalAlignmentNode(Node):
         self.drift_pos = float(g('drift_pos_per_m'))
         self.drift_yaw = math.radians(float(g('drift_yaw_deg_per_m')))
         self.min_dt = float(g('min_correction_interval_s'))
+        self.max_corrections = int(g('max_corrections'))
         self.max_sync_dt = float(g('max_tag_vio_dt_s'))
 
         # state
@@ -191,7 +222,12 @@ class GlobalAlignmentNode(Node):
         self.pub_navstate = self.create_publisher(NavState, '~/nav_state', 10) if NavState is not None else None
 
         self.create_subscription(Odometry, str(g('vio_topic')), self._on_vio, 50)
-        self.create_subscription(PoseWithCovarianceStamped, str(g('tag_pose_topic')), self._on_tag, 10)
+        if self.tag_source == 'pnp':
+            self.create_subscription(PoseWithCovarianceStamped, str(g('tag_pose_topic')), self._on_tag, 10)
+        elif self.tag_source == 'vio_landmarks':
+            self.create_subscription(PointCloud2, str(g('landmarks_topic')), self._on_landmarks, 10)
+        else:
+            raise ValueError(f"tag_source must be 'vio_landmarks' or 'pnp', got '{self.tag_source}'")
         fix_topic = str(g('gnss_fix_topic'))
         if fix_topic:
             self.create_subscription(NavSatFix, fix_topic, self._on_fix, 10)
@@ -200,7 +236,7 @@ class GlobalAlignmentNode(Node):
             self._publish_static_tf()
 
         self.get_logger().info(
-            f'ov_global alignment: init={self.init_mode} correction={self.correction_mode} '
+            f'ov_global alignment: source={self.tag_source} init={self.init_mode} correction={self.correction_mode} '
             f'tag@ENU={np.round(self.p_map_tag, 2).tolist()} yaw_known={self.tag_yaw_known} '
             f'navstate={"on" if self.pub_navstate else "off"}'
         )
@@ -336,6 +372,8 @@ class GlobalAlignmentNode(Node):
 
         if t - self.last_correction_t < self.min_dt:
             return
+        if self.max_corrections > 0 and self.n_accepted >= self.max_corrections:
+            return
 
         # ---- predicted measurement and Jacobian (state: [t(3), yaw])
         R_mg = yaw_rot(self.x[3])
@@ -405,6 +443,95 @@ class GlobalAlignmentNode(Node):
             f'tag correction #{self.n_accepted}: step dt={np.round(dx[:3], 3).tolist()} m dyaw={math.degrees(dx[3]):.3f} deg '
             f'(residual {np.linalg.norm(r[:3]):.2f} m, chi2 {maha:.1f}, range {np.linalg.norm(T_C_tag[:3, 3]):.1f} m, travelled {d:.1f} m)'
         )
+        self._publish_alignment(msg.header.stamp)
+
+    # ------------------------------------------------ VIO landmark anchor
+    def _square_from_landmarks(self, pts: np.ndarray) -> Optional[tuple]:
+        """Return (centre, unit normal) if the 4 points form a square of the expected size."""
+        if pts.shape != (4, 3):
+            return None
+        d = sorted(float(np.linalg.norm(pts[i] - pts[j])) for i in range(4) for j in range(i + 1, 4))
+        sides, diags = d[:4], d[4:]
+        side = float(np.mean(sides))
+        if side <= 0.0:
+            return None
+        ok = max(sides) - min(sides) <= self.square_tol * side
+        ok &= abs(float(np.mean(diags)) - math.sqrt(2.0) * side) <= self.square_tol * side
+        if self.tag_size > 0.0:
+            ok &= abs(side - self.tag_size) <= self.square_tol * self.tag_size
+        if not ok:
+            return None
+        centre = pts.mean(axis=0)
+        _, s, vt = np.linalg.svd(pts - centre)
+        n = vt[2]
+        if s[2] > self.square_tol * side:  # not planar
+            return None
+        return centre, n / np.linalg.norm(n)
+
+    def _on_landmarks(self, msg: PointCloud2) -> None:
+        pts = np.array(
+            [(float(p[0]), float(p[1]), float(p[2])) for p in point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True)],
+            dtype=np.float64,
+        ).reshape(-1, 3)
+        if pts.shape[0] == 0:
+            return
+        if pts.shape[0] != 4:
+            self.get_logger().warning(f'{pts.shape[0]} aruco landmarks in state, need exactly 4 (single tag)', throttle_duration_sec=5.0)
+            return
+        sq = self._square_from_landmarks(pts)
+        if sq is None:
+            self.get_logger().warning('aruco landmarks do not form a valid tag square yet', throttle_duration_sec=5.0)
+            return
+        centre_G, n_G = sq
+
+        # resolve the normal sign: towards the camera on first use, then keep continuity
+        if self.n_G_ref is None:
+            if not self.vio_buffer:
+                return
+            p_cam_G = (self.vio_buffer[-1][1] @ self.T_imu_cam)[:3, 3]
+            if float(np.dot(n_G, p_cam_G - centre_G)) < 0.0:
+                n_G = -n_G
+            self.n_G_ref = n_G.copy()
+        elif float(np.dot(n_G, self.n_G_ref)) < 0.0:
+            n_G = -n_G
+
+        # deterministic anchor: surveyed tag <- landmark estimate
+        if self.tag_yaw_known:
+            yaw_tag_map = math.atan2(self.R_map_tag[1, 2], self.R_map_tag[0, 2])
+            yaw = wrap_pi(yaw_tag_map - math.atan2(n_G[1], n_G[0]))
+        elif self.initialized:
+            yaw = self.x[3]                          # yaw from GNSS seed, position from tag
+        else:
+            self.get_logger().error('landmark anchor needs tag_facing_azimuth_deg or a GNSS initialisation', throttle_duration_sec=5.0)
+            return
+        if self.max_corrections > 0 and self.n_accepted >= self.max_corrections:
+            return
+        R4 = yaw_rot(yaw)
+        t4 = self.p_map_tag - R4 @ centre_G
+        side = self.tag_size if self.tag_size > 0.0 else float(np.linalg.norm(pts[0] - centre_G)) * math.sqrt(2.0)
+        yaw_var = 2.0 * self.landmark_var / (side * side) + self.tag_yaw_var
+        P = np.diag([self.landmark_var / 4.0 + self.tag_pos_var] * 3 + [yaw_var])
+
+        first = not self.initialized
+        dt = t4 - self.x[:3]
+        dyaw = wrap_pi(yaw - self.x[3])
+        self._set_alignment(make_T(R4, t4), P)
+        self.last_correction_t = _stamp_to_sec(msg.header.stamp)
+        self.n_accepted += 1
+
+        out = Float64MultiArray()
+        out.data = [float(dt[0]), float(dt[1]), float(dt[2]), float(dyaw), 0.0, 1.0, self.dist_since_correction]
+        self.pub_residual.publish(out)
+        if first:
+            self.get_logger().info(
+                f'anchored from VIO landmarks: tag centre global={np.round(centre_G, 2).tolist()} '
+                f'-> map->global t={np.round(t4, 2).tolist()} yaw={math.degrees(yaw):.2f} deg'
+            )
+        elif np.linalg.norm(dt) > 0.01 or abs(dyaw) > math.radians(0.01):
+            self.get_logger().info(
+                f'landmark refinement moved alignment by {np.round(dt, 3).tolist()} m, {math.degrees(dyaw):.3f} deg',
+                throttle_duration_sec=1.0,
+            )
         self._publish_alignment(msg.header.stamp)
 
     # ------------------------------------------------------------- outputs

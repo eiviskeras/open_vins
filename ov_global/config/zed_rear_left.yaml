@@ -4,14 +4,14 @@
 tag_pnp_node:
   ros__parameters:
     image_topic: /openvins/zed_rear_left/left/image_raw
-    camera_info_topic: ""                 # empty -> use imucam_yaml intrinsics
+    camera_info_topic: "" # empty -> use imucam_yaml intrinsics
     camera_id: 0
     camera_frame: cam0
     tag_pose_topic: /ov_global/tag_pose
-    tag_size_m: 0.162                     # TODO: measured black-border edge length
+    tag_size_m: 0.162 # TODO: measured black-border edge length
     tag_dictionary: DICT_APRILTAG_36h11
     tag_id: 303
-    detection_roi: [0.0, 0.0, 1.0, 1.0]   # normalized [x, y, w, h]
+    detection_roi: [0.0, 0.0, 1.0, 1.0] # normalized [x, y, w, h]
     corner_sigma_px: 0.5
     max_reproj_error_px: 2.0
     max_range_m: 60.0
@@ -19,46 +19,55 @@ tag_pnp_node:
 global_alignment_node:
   ros__parameters:
     vio_topic: /ov_msckf/odomimu
+    # vio_landmarks: anchor map->global on the tag corners OpenVINS keeps as SLAM landmarks
+    #                (/ov_msckf/points_aruco); OpenVINS does the loop closure, no PnP node needed.
+    # pnp:           fuse tag_pnp_node detections as gated EKF/replace step corrections.
+    tag_source: vio_landmarks
+    landmarks_topic: /ov_msckf/points_aruco
     tag_pose_topic: /ov_global/tag_pose
-    map_frame: map                        # ENU at ref_lla_deg
-    ned_frame: world_ned                  # NED at ref_lla_deg (autoferry convention)
-    global_frame: global                  # OpenVINS world
+    map_frame: map # ENU at ref_lla_deg
+    ned_frame: world_ned # NED at ref_lla_deg (autoferry convention)
+    global_frame: global # OpenVINS world
     imu_frame: imu
-    base_frame: base_link                 # vessel body, SNAME (x fwd, y stbd, z down)
+    base_frame: base_link # vessel body, SNAME (x fwd, y stbd, z down)
     antenna_frame: gnss_antenna
     publish_tf: true
     publish_static_tf: true
 
-    # --- vehicle geometry (base_link is base_link_sname_estimated in autoferry frames.yaml)
+    # --- vehicle geometry (base_link = base_link_sname_estimated, SNAME: x fwd, y stbd, z down)
     camera_id: 0
-    # ZED rear-left IMU in base_link. TODO: pick CRBB or CRSB from frames.yaml; rotation maps
-    # ZED IMU axes (x fwd, y left, z up, ROS body) onto the SNAME body: roll 180 deg about x.
-    T_base_imu_xyz: [-19.89, -3.981, -1.419]
-    T_base_imu_rpy: [3.14159265, 0.0, 0.0]
-    p_base_antenna: [-11.288, 3.934, -3.531]   # GR antenna lever arm (novatel relay)
+    p_base_cam: [-18.923, 4.628, -1.341] # CRSB: ZED rear-left cam0 optical centre (frames.yaml)
+    # mount rpy [deg] applied to a level, forward-looking camera; yaw 180 = looking aft.
+    # TODO: adjust yaw if the camera is angled (e.g. 180 +/- pan), roll/pitch for tilt.
+    cam_mount_rpy_deg: [0.0, 0.0, 180.0]
+    p_base_antenna: [-10.343, 3.333, -3.531] # GR antenna lever arm (frames.yaml)
 
     # --- map origin and AprilTag survey
-    ref_lla_deg: [54.176852, 12.095446, 5.14]  # autoferry llh_ref
-    tag_center_lla_deg: [54.176852, 12.095446, 5.14]  # TODO survey (lat, lon, ellipsoid height)
+    ref_lla_deg: [54.176852, 12.095446, 5.14] # autoferry llh_ref
+    tag_center_lla_deg: [54.176852, 12.095446, 5.14] # TODO survey (lat, lon, ellipsoid height)
     tag_center_offset_up_m: 0.0
-    tag_facing_azimuth_deg: .nan               # TODO compass direction the tag face looks at; .nan -> yaw not corrected
+    tag_facing_azimuth_deg: .nan # TODO compass direction the tag face looks at; .nan -> yaw not corrected
     tag_tilt_deg: 0.0
     tag_roll_deg: 0.0
     tag_pos_sigma_m: 0.05
     tag_yaw_sigma_deg: 2.0
+    tag_size_m: 0.162 # TODO: same as tag_pnp_node; enables the landmark square check
+    landmark_sigma_m: 0.10 # assumed accuracy of the OpenVINS aruco landmarks
+    landmark_square_tolerance: 0.25
 
     # --- initialisation
-    init_mode: gnss                       # gnss | tag
-    init_lla_deg: [54.176852, 12.095446, 5.14]  # antenna LLA at VIO start (TODO from bestpos)
-    init_heading_ned_deg: 0.0             # base_link heading at VIO start (TODO from heading2)
+    init_mode: gnss # gnss | tag
+    init_lla_deg: [54.176852, 12.095446, 5.14] # antenna LLA at VIO start (TODO from bestpos)
+    init_heading_ned_deg: 0.0 # base_link heading at VIO start (TODO from heading2)
     init_pos_sigma_m: 1.0
     init_heading_sigma_deg: 2.0
-    gnss_fix_topic: ""                    # optional sensor_msgs/NavSatFix that overrides init_lla_deg
+    gnss_fix_topic: "" # optional sensor_msgs/NavSatFix that overrides init_lla_deg
 
-    # --- correction
-    correction_mode: kalman               # kalman | replace
+    # --- correction (pnp source only, except max_corrections)
+    correction_mode: kalman # kalman | replace
     chi2_gate_prob: 0.99
     drift_pos_per_m: 0.02
     drift_yaw_deg_per_m: 0.05
     min_correction_interval_s: 0.0
+    max_corrections: 0 # 0 = unlimited; 1 = anchor once and never move again
     max_tag_vio_dt_s: 0.05
