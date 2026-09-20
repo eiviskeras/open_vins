@@ -8,7 +8,7 @@ tag_pnp_node:
     camera_id: 0
     camera_frame: cam0
     tag_pose_topic: /ov_global/tag_pose
-    tag_size_m: 0.162 # TODO: measured black-border edge length
+    tag_size_m: 0.7 # 700 mm AprilTag surveyed at Wittow south 2026-09-11
     tag_dictionary: DICT_APRILTAG_36h11
     tag_id: 303
     detection_roi: [0.0, 0.0, 1.0, 1.0] # normalized [x, y, w, h]
@@ -43,17 +43,23 @@ global_alignment_node:
     p_base_antenna: [-10.343, 3.333, -3.531] # GR antenna lever arm (frames.yaml)
 
     # --- map origin and fiducial survey (tag_* names kept; the fiducial is the checkerboard centre)
-    ref_lla_deg: [54.176852, 12.095446, 5.14] # autoferry llh_ref
-    tag_center_lla_deg: [54.176852, 12.095446, 5.14] # TODO survey the board centre (lat, lon, ellipsoid height)
-    tag_center_offset_up_m: 0.0
-    tag_facing_azimuth_deg: .nan # TODO compass direction the board face looks at; .nan -> yaw not corrected
+    # Wittow (Ruegen) reference point, ellipsoidal height.
+    ref_lla_deg: [54.55622916, 13.2463241, 41.554]
+    # Surveyed 2026-09-11 (rosbag2_2026_09_11-13_32_02, RTK gpsd fixes, Scripts/rosbag/survey_target_from_bag.py):
+    # antenna on top of the 0.7 m AprilTag -> tag centre = top point - 0.35 m. The receiver reports MSL
+    # heights; +36.076 m EGM96 undulation applied to get ellipsoidal height (verify against the
+    # ferry receiver's undulation; ~0.5 m uncertainty). Face fitted through right/centre/left points
+    # (rms 1.2 cm over 5.6 m).
+    tag_center_lla_deg: [54.55469463, 13.24491467, 38.495]
+    tag_center_offset_up_m: 0.0 # TODO: -(antenna phase-centre height above its base) if not negligible
+    tag_facing_azimuth_deg: 50.38 # outward normal of the target face (looks NE); back side would be 230.38
     tag_tilt_deg: 0.0
     tag_roll_deg: 0.0
     tag_pos_sigma_m: 0.05
     tag_yaw_sigma_deg: 2.0
     # OpenVINS checkerboard landmarks: 7x5 inner corners, 210 mm squares (see estimator_config.yaml).
-    # For the AprilTag use landmark_grid_cols/rows 2 and landmark_spacing_m = tag_size_m (0.162).
-    tag_size_m: 0.162
+    # For the AprilTag use landmark_grid_cols/rows 2 and landmark_spacing_m = tag_size_m (0.7).
+    tag_size_m: 0.7
     landmark_grid_cols: 7
     landmark_grid_rows: 5
     landmark_spacing_m: 0.21
@@ -62,7 +68,7 @@ global_alignment_node:
 
     # --- initialisation
     init_mode: gnss # gnss | tag
-    init_lla_deg: [54.176852, 12.095446, 5.14] # antenna LLA at VIO start (TODO from bestpos)
+    init_lla_deg: [54.55622916, 13.2463241, 41.554] # antenna LLA at VIO start (TODO from bestpos)
     init_heading_ned_deg: 0.0 # base_link heading at VIO start (TODO from heading2)
     init_pos_sigma_m: 1.0
     init_heading_sigma_deg: 2.0
